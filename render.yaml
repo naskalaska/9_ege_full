@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: ege9-trainer
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/server.py 0.0.0.0 $PORT

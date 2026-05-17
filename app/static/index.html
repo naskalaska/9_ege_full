@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ЕГЭ 9: тренажер орфографии</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">9</div>
+          <div>
+            <h1>ЕГЭ: задание 9</h1>
+            <p>Орфография, правила и строки с общей буквой</p>
+          </div>
+        </div>
+        <nav class="top-actions" id="topActions"></nav>
+      </header>
+
+      <main id="view"></main>
+    </div>
+
+    <template id="loginTemplate">
+      <section class="login-layout">
+        <div class="login-hero">
+          <div class="hero-media">
+            <div class="letter-grid" aria-hidden="true">
+              <span>а</span><span>о</span><span>и</span><span>е</span>
+              <span>ы</span><span>я</span><span>ю</span><span>э</span>
+              <span>ц</span><span>ч</span><span>щ</span><span>ж</span>
+            </div>
+          </div>
+          <div class="hero-copy">
+            <h2>Тренировка, которая помнит, где ученик спотыкается</h2>
+            <p>Выбор правила, случайный микс и формат строки собраны вокруг одной базы слов.</p>
+          </div>
+        </div>
+
+        <form class="login-panel" id="loginForm">
+          <h2>Вход</h2>
+          <label>
+            Логин
+            <input name="username" autocomplete="username" value="student" />
+          </label>
+          <label>
+            Пароль
+            <input name="password" type="password" autocomplete="current-password" value="student123" />
+          </label>
+          <button class="primary-button" type="submit">Войти</button>
+          <p class="muted">Учитель: teacher / teacher123. Ученик: student / student123.</p>
+          <p class="error" id="loginError"></p>
+        </form>
+      </section>
+    </template>
+
+    <template id="dashboardTemplate">
+      <section class="workspace">
+        <aside class="side-panel">
+          <div class="user-block" id="userBlock"></div>
+          <div class="mode-list" id="modeList"></div>
+          <div class="stats-strip" id="quickStats"></div>
+        </aside>
+
+        <section class="main-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow" id="modeEyebrow">режим</p>
+              <h2 id="modeTitle"></h2>
+            </div>
+            <button class="secondary-button" id="progressButton" type="button">Прогресс</button>
+          </div>
+
+          <div id="setupView"></div>
+          <div id="practiceView" class="practice-view hidden"></div>
+          <div id="resultView" class="result-view hidden"></div>
+        </section>
+      </section>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
