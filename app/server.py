@@ -151,7 +151,7 @@ def ensure_app_db() -> None:
         ensure_admin_role_supported(con)
         ensure_column(con, "attempts", "scope_id", "TEXT")
         ensure_column(con, "attempts", "word_id", "TEXT")
-        seed_user(con, ADMIN_USERNAME, ADMIN_PASSWORD, "admin", "Администратор")
+        ensure_service_admin(con)
         seed_user(con, "teacher", "teacher123", "teacher", "Учитель")
         seed_user(con, "student", "student123", "student", "Ученик")
         con.execute(
@@ -183,6 +183,36 @@ def seed_user(con: sqlite3.Connection, username: str, password: str, role: str, 
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (f"user_{username}", username, display_name, role, salt, password_hash(password, salt), now_iso()),
+    )
+
+
+def ensure_service_admin(con: sqlite3.Connection) -> None:
+    salt = secrets.token_hex(8)
+    hashed = password_hash(ADMIN_PASSWORD, salt)
+    existing = con.execute("SELECT 1 FROM users WHERE username = ?", (ADMIN_USERNAME,)).fetchone()
+    if existing:
+        con.execute(
+            """
+            UPDATE users
+            SET user_id = 'user_admin',
+                display_name = 'Администратор',
+                role = 'admin',
+                password_salt = ?,
+                password_hash = ?,
+                teacher_code = NULL,
+                teacher_id = NULL
+            WHERE username = ?
+            """,
+            (salt, hashed, ADMIN_USERNAME),
+        )
+        return
+    con.execute(
+        """
+        INSERT INTO users
+            (user_id, username, display_name, role, password_salt, password_hash, created_at)
+        VALUES ('user_admin', ?, 'Администратор', 'admin', ?, ?, ?)
+        """,
+        (ADMIN_USERNAME, salt, hashed, now_iso()),
     )
 
 
@@ -1117,3 +1147,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
