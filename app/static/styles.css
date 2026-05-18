@@ -205,6 +205,17 @@ select {
   color: var(--ink);
 }
 
+input[type="range"] {
+  padding: 0;
+  accent-color: var(--green);
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+
 button {
   min-height: 40px;
   border: 0;
@@ -387,7 +398,47 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 150px;
   gap: 12px;
-  align-items: end;
+  align-items: start;
+}
+
+.rule-check-list {
+  max-height: 360px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.rule-check {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border-radius: 7px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.rule-check:hover {
+  background: #f4f7f4;
+}
+
+.rule-check-all {
+  background: var(--surface-strong);
+}
+
+.rule-check span {
+  overflow-wrap: anywhere;
+}
+
+.rule-check b {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .selected-rule {
@@ -603,3 +654,4 @@ button {
     inset: 22px;
   }
 }
+
