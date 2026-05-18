@@ -249,6 +249,7 @@ WORD_BY_ID = {word["id"]: word for word in WORDS}
 WORDS_BY_RULE: dict[str, list[dict[str, Any]]] = {}
 for word in WORDS:
     WORDS_BY_RULE.setdefault(word["rule_id"], []).append(word)
+RULE_BY_ID = {rule["rule_id"]: rule for rule in RULES}
 
 
 def db() -> sqlite3.Connection:
@@ -275,8 +276,11 @@ def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
     return json.loads(handler.rfile.read(length).decode("utf-8"))
 
 
-def scope_id_for(mode: str, rule_id: str | None = None) -> str:
+def scope_id_for(mode: str, rule_id: str | None = None, rule_ids: list[str] | None = None) -> str:
     if mode == "rule":
+        if rule_ids:
+            digest = hashlib.sha1("|".join(sorted(rule_ids)).encode("utf-8")).hexdigest()[:16]
+            return f"rules:{digest}"
         return f"rule:{rule_id}"
     if mode == "mix":
         return "mix:all"
@@ -515,11 +519,20 @@ def start_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     mode = payload.get("mode")
     count = max(1, min(int(payload.get("count") or 10), 30))
     if mode == "rule":
-        rule_id = payload.get("rule_id")
-        pool = WORDS_BY_RULE.get(rule_id, [])
+        raw_rule_ids = payload.get("rule_ids")
+        if isinstance(raw_rule_ids, list):
+            rule_ids = [str(rule_id) for rule_id in raw_rule_ids if str(rule_id) in WORDS_BY_RULE]
+        else:
+            rule_id = str(payload.get("rule_id") or "")
+            rule_ids = [rule_id] if rule_id in WORDS_BY_RULE else []
+        rule_ids = list(dict.fromkeys(rule_ids))
+
+        pool: list[dict[str, Any]] = []
+        for rule_id in rule_ids:
+            pool.extend(WORDS_BY_RULE.get(rule_id, []))
         if not pool:
-            raise ValueError("Правило не найдено или в нем нет слов.")
-        scope_id = scope_id_for(mode, rule_id)
+            raise ValueError("Выберите хотя бы одну подгруппу с заданиями.")
+        scope_id = scope_id_for(mode, rule_ids=rule_ids)
         questions = [make_word_question(word) for word in pick_words_for_scope(user["user_id"], scope_id, pool, min(count, len(pool)))]
     elif mode == "mix":
         scope_id = scope_id_for(mode)
@@ -636,25 +649,49 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
         ).fetchall()
         by_rule = con.execute(
             f"""
-            SELECT COALESCE(a.rule_name, a.mode) AS rule_name, COUNT(*) AS total,
+            SELECT COALESCE(a.category, a.mode) AS category,
+                   COALESCE(a.rule_name, a.mode) AS rule_name,
+                   COUNT(*) AS total,
                    COALESCE(SUM(a.is_correct), 0) AS correct
             FROM attempts a
             {where}
-            GROUP BY COALESCE(a.rule_name, a.mode)
-            ORDER BY total DESC, rule_name
-            LIMIT 12
+            GROUP BY COALESCE(a.category, a.mode), COALESCE(a.rule_name, a.mode)
+            ORDER BY category, rule_name
+            """,
+            params,
+        ).fetchall()
+        by_category = con.execute(
+            f"""
+            SELECT COALESCE(a.category, a.mode) AS category, COUNT(*) AS total,
+                   COALESCE(SUM(a.is_correct), 0) AS correct
+            FROM attempts a
+            {where}
+            GROUP BY COALESCE(a.category, a.mode)
+            ORDER BY category
             """,
             params,
         ).fetchall()
         recent = con.execute(
             f"""
-            SELECT a.created_at, a.mode, a.rule_name, a.prompt, a.given_answer,
+            SELECT a.created_at, a.mode, a.category, a.rule_name, a.prompt, a.given_answer,
                    a.correct_answer, a.is_correct, u.display_name
             FROM attempts a
             JOIN users u ON u.user_id = a.user_id
             {where}
             ORDER BY a.created_at DESC
             LIMIT 20
+            """,
+            params,
+        ).fetchall()
+        answer_lists = con.execute(
+            f"""
+            SELECT a.created_at, a.category, a.rule_name, a.prompt, a.given_answer,
+                   a.correct_answer, a.is_correct, u.display_name
+            FROM attempts a
+            JOIN users u ON u.user_id = a.user_id
+            {where}
+            ORDER BY a.created_at DESC
+            LIMIT 80
             """,
             params,
         ).fetchall()
@@ -670,8 +707,11 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
         "summary": dict(summary),
         "due_reviews": int(due["due"]),
         "by_student": [dict(row) for row in by_student],
+        "by_category": [dict(row) for row in by_category],
         "by_rule": [dict(row) for row in by_rule],
         "recent": [dict(row) for row in recent],
+        "correct_attempts": [dict(row) for row in answer_lists if int(row["is_correct"]) == 1],
+        "incorrect_attempts": [dict(row) for row in answer_lists if int(row["is_correct"]) == 0],
     }
 
 
@@ -786,3 +826,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
