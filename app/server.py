@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import random
 import secrets
@@ -18,6 +19,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = ROOT / "app" / "static"
 DATA_DIR = ROOT / "data"
+IMAGES_DIR = ROOT / "images"
 WORDS_PATH = ROOT / "ege9_final_grouped_by_orthogram_v4.json"
 DB_PATH = DATA_DIR / "ege_app.db"
 
@@ -284,16 +286,53 @@ def scope_id_for(mode: str, rule_id: str | None = None, rule_ids: list[str] | No
         return f"rule:{rule_id}"
     if mode == "mix":
         return "mix:all"
+    if mode == "errors":
+        return "errors:bank"
     return mode
 
 
-def letter_choices(correct: str) -> list[str]:
-    base = ["а", "о", "е", "и", "ы", "я", "ю", "э"]
-    choices = [correct]
-    pool = [letter for letter in base if letter != correct]
-    random.shuffle(pool)
-    choices.extend(pool[:3])
+def normalize_letter(value: Any) -> str:
+    return str(value or "").strip().lower().replace("ё", "ё")[:1]
+
+
+def letter_choices(word: dict[str, Any]) -> list[str]:
+    correct = normalize_letter(word["correct_letter"])
+    marker = f"{word['category']} {word['rule_name']} {word['dependency']} {word.get('root', '')}".lower()
+    common_letters = ["а", "о", "е", "и", "ы", "я", "ю", "э", "ё", "у"]
+
+    if "после ц" in marker and correct in {"и", "ы"}:
+        priority = ["и", "ы"]
+    elif "шип" in marker and correct in {"о", "ё", "е"}:
+        priority = ["о", "ё", "е"]
+    elif correct in {"а", "о"}:
+        priority = ["а", "о"]
+    elif correct in {"и", "е"}:
+        priority = ["и", "е"]
+    elif correct in {"я", "а"}:
+        priority = ["я", "а"]
+    elif correct in {"ю", "у"}:
+        priority = ["ю", "у"]
+    else:
+        priority = [correct]
+
+    choices: list[str] = []
+    for letter in priority:
+        letter = normalize_letter(letter)
+        if letter and letter not in choices:
+            choices.append(letter)
+
+    if len(choices) <= 1:
+        for letter in common_letters:
+            letter = normalize_letter(letter)
+            if letter and letter not in choices:
+                choices.append(letter)
+            if len(choices) >= 4:
+                break
+
     random.shuffle(choices)
+    if correct not in choices:
+        choices[0] = correct
+        random.shuffle(choices)
     return choices
 
 
@@ -303,7 +342,7 @@ def make_word_question(word: dict[str, Any]) -> dict[str, Any]:
         "kind": "word",
         "source_word_id": word["id"],
         "prompt": word["variant"],
-        "choices": letter_choices(word["correct_letter"]),
+        "choices": letter_choices(word),
         "category": word["category"],
         "rule_id": word["rule_id"],
         "rule_name": word["rule_name"],
@@ -450,6 +489,15 @@ def sample_words(pool: list[dict[str, Any]], count: int, used_ids: set[str]) -> 
     return picked
 
 
+def shuffle_line_rows(rows: list[dict[str, Any]]) -> None:
+    random.SystemRandom().shuffle(rows)
+    if rows and rows[0]["is_correct"] and random.random() < 0.5:
+        incorrect_indexes = [index for index, row in enumerate(rows[1:], start=1) if not row["is_correct"]]
+        if incorrect_indexes:
+            swap_index = random.choice(incorrect_indexes)
+            rows[0], rows[swap_index] = rows[swap_index], rows[0]
+
+
 def make_line_question() -> dict[str, Any]:
     pools = line_pair_pools()
     viable_pairs = [
@@ -480,10 +528,10 @@ def make_line_question() -> dict[str, Any]:
         words: list[dict[str, Any]] = []
         for letter in pattern:
             words.extend(sample_words(by_letter[letter], 1, used_ids))
-        random.shuffle(words)
+        random.SystemRandom().shuffle(words)
         rows.append({"is_correct": False, "letter": None, "words": words})
 
-    random.shuffle(rows)
+    shuffle_line_rows(rows)
     correct_indexes = [str(index + 1) for index, row in enumerate(rows) if row["is_correct"]]
     correct_rows = [row for row in rows if row["is_correct"]]
 
@@ -515,6 +563,169 @@ def normalize_given_answer(question: dict[str, Any], value: Any) -> str:
     return raw
 
 
+def error_bank_words(user_id: str) -> list[dict[str, Any]]:
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT word_id, MAX(created_at) AS last_error_at
+            FROM attempts
+            WHERE user_id = ? AND is_correct = 0 AND word_id IS NOT NULL
+            GROUP BY word_id
+            ORDER BY last_error_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [WORD_BY_ID[row["word_id"]] for row in rows if row["word_id"] in WORD_BY_ID]
+
+
+def teacher_dashboard(con: sqlite3.Connection, teacher_id: str) -> dict[str, Any]:
+    students = con.execute(
+        """
+        SELECT user_id, display_name, username
+        FROM users
+        WHERE role = 'student' AND teacher_id = ?
+        ORDER BY display_name
+        """,
+        (teacher_id,),
+    ).fetchall()
+    result_students = []
+    for student in students:
+        user_id = student["user_id"]
+        summary = con.execute(
+            """
+            SELECT COUNT(*) AS total, COALESCE(SUM(is_correct), 0) AS correct,
+                   COUNT(DISTINCT word_id) AS touched
+            FROM attempts
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        error_rules = con.execute(
+            """
+            SELECT COALESCE(category, mode) AS category,
+                   COALESCE(rule_name, mode) AS rule_name,
+                   COUNT(*) AS errors
+            FROM attempts
+            WHERE user_id = ? AND is_correct = 0
+            GROUP BY COALESCE(category, mode), COALESCE(rule_name, mode)
+            ORDER BY errors DESC, rule_name
+            LIMIT 3
+            """,
+            (user_id,),
+        ).fetchall()
+        due_words = con.execute(
+            """
+            SELECT wp.word_id, wp.due_reviews, wp.error_count
+            FROM word_progress wp
+            WHERE wp.user_id = ? AND wp.due_reviews > 0
+            ORDER BY wp.due_reviews DESC, wp.error_count DESC, wp.last_seen_at DESC
+            LIMIT 12
+            """,
+            (user_id,),
+        ).fetchall()
+        error_bank = con.execute(
+            """
+            SELECT a.word_id, MAX(a.created_at) AS last_error_at, COUNT(*) AS errors
+            FROM attempts a
+            WHERE a.user_id = ? AND a.is_correct = 0 AND a.word_id IS NOT NULL
+            GROUP BY a.word_id
+            ORDER BY last_error_at DESC
+            LIMIT 20
+            """,
+            (user_id,),
+        ).fetchall()
+        touched = int(summary["touched"] or 0)
+        result_students.append(
+            {
+                "user_id": user_id,
+                "display_name": student["display_name"],
+                "username": student["username"],
+                "total": int(summary["total"] or 0),
+                "correct": int(summary["correct"] or 0),
+                "untouched": max(len(WORDS) - touched, 0),
+                "not_worked_out": [
+                    {
+                        "word": WORD_BY_ID[row["word_id"]]["variant"],
+                        "correct_spelling": WORD_BY_ID[row["word_id"]]["correct_spelling"],
+                        "rule_name": WORD_BY_ID[row["word_id"]]["rule_name"],
+                        "due_reviews": int(row["due_reviews"]),
+                    }
+                    for row in due_words
+                    if row["word_id"] in WORD_BY_ID
+                ],
+                "top_errors": [dict(row) for row in error_rules],
+                "error_bank": [
+                    {
+                        "word": WORD_BY_ID[row["word_id"]]["variant"],
+                        "correct_spelling": WORD_BY_ID[row["word_id"]]["correct_spelling"],
+                        "rule_name": WORD_BY_ID[row["word_id"]]["rule_name"],
+                        "errors": int(row["errors"]),
+                    }
+                    for row in error_bank
+                    if row["word_id"] in WORD_BY_ID
+                ],
+            }
+        )
+    return {"students": result_students}
+
+
+def admin_overview(user: dict[str, Any]) -> dict[str, Any]:
+    if user["role"] != "teacher":
+        raise PermissionError("Админ-страница доступна только учителю.")
+    with db() as con:
+        platform = con.execute(
+            """
+            SELECT COUNT(*) AS total, COALESCE(SUM(is_correct), 0) AS correct,
+                   COUNT(DISTINCT user_id) AS active_users
+            FROM attempts
+            """
+        ).fetchone()
+        teachers = con.execute(
+            """
+            SELECT t.user_id, t.display_name, t.username, t.teacher_code,
+                   COUNT(DISTINCT s.user_id) AS students,
+                   COUNT(a.attempt_id) AS attempts,
+                   COALESCE(SUM(a.is_correct), 0) AS correct
+            FROM users t
+            LEFT JOIN users s ON s.teacher_id = t.user_id AND s.role = 'student'
+            LEFT JOIN attempts a ON a.user_id = s.user_id
+            WHERE t.role = 'teacher'
+            GROUP BY t.user_id
+            ORDER BY t.display_name
+            """
+        ).fetchall()
+        teacher_ids = [row["user_id"] for row in teachers]
+        student_rows = []
+        if teacher_ids:
+            placeholders = ",".join("?" for _ in teacher_ids)
+            student_rows = con.execute(
+                f"""
+                SELECT s.teacher_id, s.display_name, s.username,
+                       COUNT(a.attempt_id) AS attempts,
+                       COALESCE(SUM(a.is_correct), 0) AS correct
+                FROM users s
+                LEFT JOIN attempts a ON a.user_id = s.user_id
+                WHERE s.role = 'student' AND s.teacher_id IN ({placeholders})
+                GROUP BY s.user_id
+                ORDER BY s.display_name
+                """,
+                tuple(teacher_ids),
+            ).fetchall()
+        students_by_teacher: dict[str, list[dict[str, Any]]] = {}
+        for row in student_rows:
+            students_by_teacher.setdefault(row["teacher_id"], []).append(dict(row))
+    return {
+        "platform": dict(platform),
+        "teachers": [
+            {
+                **dict(row),
+                "students_list": students_by_teacher.get(row["user_id"], []),
+            }
+            for row in teachers
+        ],
+    }
+
+
 def start_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     mode = payload.get("mode")
     count = max(1, min(int(payload.get("count") or 10), 30))
@@ -540,6 +751,12 @@ def start_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     elif mode == "line":
         scope_id = scope_id_for(mode)
         questions = [make_line_question() for _ in range(count)]
+    elif mode == "errors":
+        scope_id = scope_id_for(mode)
+        pool = error_bank_words(user["user_id"])
+        if not pool:
+            raise ValueError("Копилка ошибок пока пуста.")
+        questions = [make_word_question(word) for word in pick_words_for_scope(user["user_id"], scope_id, pool, min(count, len(pool)))]
     else:
         raise ValueError("Неизвестный режим тренировки.")
 
@@ -628,6 +845,9 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
         if user["role"] != "teacher":
             where = "WHERE a.user_id = ?"
             params = (user["user_id"],)
+        else:
+            where = "WHERE a.user_id IN (SELECT user_id FROM users WHERE role = 'student' AND teacher_id = ?)"
+            params = (user["user_id"],)
         summary = con.execute(
             f"""
             SELECT COUNT(*) AS total, COALESCE(SUM(is_correct), 0) AS correct
@@ -643,9 +863,14 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
             FROM users u
             LEFT JOIN attempts a ON a.user_id = u.user_id
             WHERE u.role = 'student'
+              AND (
+                (? = 'teacher' AND u.teacher_id = ?)
+                OR (? = 'student' AND u.user_id = ?)
+              )
             GROUP BY u.user_id
             ORDER BY u.display_name
-            """
+            """,
+            (user["role"], user["user_id"], user["role"], user["user_id"]),
         ).fetchall()
         by_rule = con.execute(
             f"""
@@ -703,9 +928,19 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
             """,
             (user["user_id"],),
         ).fetchone() if user["role"] != "teacher" else {"due": 0}
+        error_bank = con.execute(
+            """
+            SELECT COUNT(DISTINCT word_id) AS total
+            FROM attempts
+            WHERE user_id = ? AND is_correct = 0 AND word_id IS NOT NULL
+            """,
+            (user["user_id"],),
+        ).fetchone() if user["role"] != "teacher" else {"total": 0}
     return {
         "summary": dict(summary),
         "due_reviews": int(due["due"]),
+        "error_bank_count": int(error_bank["total"]),
+        "teacher_dashboard": teacher_dashboard(con, user["user_id"]) if user["role"] == "teacher" else None,
         "by_student": [dict(row) for row in by_student],
         "by_category": [dict(row) for row in by_category],
         "by_rule": [dict(row) for row in by_rule],
@@ -755,16 +990,26 @@ class Handler(SimpleHTTPRequestHandler):
                         "rules": grouped,
                         "word_count": len(WORDS),
                         "repeat_on_error": REPEAT_ON_ERROR,
-                        "demo_accounts": [
-                            {"role": "teacher", "login": "teacher", "password": "teacher123"},
-                            {"role": "student", "login": "student", "password": "student123"},
-                        ],
                     }
                 )
             elif parsed.path == "/api/me":
                 self.send_json({"user": self.current_user()})
             elif parsed.path == "/api/progress":
                 self.send_json(progress_for(self.require_user()))
+            elif parsed.path == "/api/admin":
+                self.send_json(admin_overview(self.require_user()))
+            elif parsed.path.startswith("/images/"):
+                image_name = Path(parsed.path).name
+                image_path = (IMAGES_DIR / image_name).resolve()
+                if not str(image_path).startswith(str(IMAGES_DIR.resolve())) or not image_path.exists():
+                    self.send_json({"error": "Image not found"}, HTTPStatus.NOT_FOUND)
+                    return
+                body = image_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mimetypes.guess_type(image_path.name)[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 if parsed.path == "/":
                     self.path = "/index.html"
@@ -826,4 +1071,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
