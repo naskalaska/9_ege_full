@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ЕГЭ 9: тренажер орфографии</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div id="app" class="app-shell">
@@ -25,6 +25,7 @@
     <template id="loginTemplate">
       <section class="login-layout">
         <div class="login-hero">
+          <img class="hero-logo" src="/images/logo.jpg" alt="Логотип" />
           <div class="hero-media">
             <div class="letter-grid" aria-hidden="true">
               <span>а</span><span>о</span><span>и</span><span>е</span>
@@ -36,20 +37,22 @@
             <h2>Тренировка, которая помнит, где ученик спотыкается</h2>
             <p>Выбор правила, случайный микс и формат строки собраны вокруг одной базы слов.</p>
           </div>
+          <a class="hero-contact" href="https://max.ru/join/c-wvSq2-PrZmY8PTFq2eHL_O7oHokf8IHzxyEM0oaO8" target="_blank" rel="noreferrer">
+            Димитриева Анастасия | Учитель и нейросети
+          </a>
         </div>
 
         <form class="login-panel" id="loginForm">
           <h2>Вход</h2>
           <label>
             Логин
-            <input name="username" autocomplete="username" value="student" />
+            <input name="username" autocomplete="username" />
           </label>
           <label>
             Пароль
-            <input name="password" type="password" autocomplete="current-password" value="student123" />
+            <input name="password" type="password" autocomplete="current-password" />
           </label>
           <button class="primary-button" type="submit">Войти</button>
-          <p class="muted">Учитель: teacher / teacher123. Ученик: student / student123.</p>
           <p class="error" id="loginError"></p>
         </form>
       </section>
@@ -82,3 +85,4 @@
     <script src="/app.js"></script>
   </body>
 </html>
+
