@@ -4,10 +4,11 @@ const state = {
   bootstrap: null,
   mode: "rule",
   selectedCategory: null,
-  selectedRuleId: null,
+  selectedRuleIds: [],
   currentSession: null,
   answers: {},
   startedAt: null,
+  questionCount: 10,
 };
 
 const modes = {
@@ -54,14 +55,20 @@ function selectedRules() {
   return state.bootstrap.rules[state.selectedCategory] || [];
 }
 
+function selectedRuleSet() {
+  return new Set(state.selectedRuleIds);
+}
+
 function ensureRuleSelection() {
   const categories = ruleCategories();
   if (!state.selectedCategory || !state.bootstrap.rules[state.selectedCategory]) {
     state.selectedCategory = categories[0] || null;
   }
   const rules = selectedRules();
-  if (!rules.some((rule) => rule.rule_id === state.selectedRuleId)) {
-    state.selectedRuleId = rules[0]?.rule_id || null;
+  const available = new Set(rules.map((rule) => rule.rule_id));
+  state.selectedRuleIds = state.selectedRuleIds.filter((ruleId) => available.has(ruleId));
+  if (!state.selectedRuleIds.length && rules.length) {
+    state.selectedRuleIds = rules.map((rule) => rule.rule_id);
   }
 }
 
@@ -249,30 +256,41 @@ function renderSetup() {
   setup.innerHTML = `
     <div class="setup-grid">
       <label>
-        Количество вопросов
-        <select id="questionCount">
-          <option value="10">10</option>
-          <option value="15">15</option>
-          <option value="20">20</option>
-          <option value="30">30</option>
-        </select>
+        Количество вопросов: <b id="questionCountValue">${state.questionCount}</b>
+        <input id="questionCount" type="range" min="1" max="30" value="${state.questionCount}" />
       </label>
       <button class="primary-button" id="startPractice" type="button">Начать</button>
     </div>
     ${ruleSelector}
   `;
   setup.querySelector("#startPractice").addEventListener("click", startPractice);
+  setup.querySelector("#questionCount").addEventListener("input", (event) => {
+    state.questionCount = Number(event.target.value);
+    setup.querySelector("#questionCountValue").textContent = state.questionCount;
+  });
   setup.querySelectorAll("[data-category]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedCategory = button.dataset.category;
-      state.selectedRuleId = null;
+      state.selectedRuleIds = [];
       ensureRuleSelection();
       renderSetup();
     });
   });
-  setup.querySelector("#ruleSelect")?.addEventListener("change", (event) => {
-    state.selectedRuleId = event.target.value;
+  setup.querySelector("#allRules")?.addEventListener("change", (event) => {
+    state.selectedRuleIds = event.target.checked ? selectedRules().map((rule) => rule.rule_id) : [];
     renderSetup();
+  });
+  setup.querySelectorAll("[data-rule-id]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const next = selectedRuleSet();
+      if (checkbox.checked) {
+        next.add(checkbox.dataset.ruleId);
+      } else {
+        next.delete(checkbox.dataset.ruleId);
+      }
+      state.selectedRuleIds = [...next];
+      renderSetup();
+    });
   });
 }
 
@@ -286,21 +304,36 @@ function renderRuleSelector() {
       </button>
     `)
     .join("");
-  const ruleOptions = selectedRules()
-    .map((rule) => `<option value="${rule.rule_id}" ${rule.rule_id === state.selectedRuleId ? "selected" : ""}>${rule.rule_name} · ${rule.count}</option>`)
+  const selected = selectedRuleSet();
+  const rules = selectedRules();
+  const allSelected = rules.length > 0 && selected.size === rules.length;
+  const selectedCount = rules
+    .filter((rule) => selected.has(rule.rule_id))
+    .reduce((sum, rule) => sum + rule.count, 0);
+  const ruleOptions = rules
+    .map((rule) => `
+      <label class="rule-check">
+        <input type="checkbox" data-rule-id="${rule.rule_id}" ${selected.has(rule.rule_id) ? "checked" : ""} />
+        <span>${rule.rule_name}</span>
+        <b>${rule.count}</b>
+      </label>
+    `)
     .join("");
-  const activeRule = selectedRules().find((rule) => rule.rule_id === state.selectedRuleId);
   return `
     <section class="rule-picker">
       <div class="category-grid">${categoryButtons}</div>
       <div class="rule-select-row">
-        <label>
-          Подвыбор внутри группы
-          <select id="ruleSelect">${ruleOptions}</select>
-        </label>
+        <div class="rule-check-list">
+          <label class="rule-check rule-check-all">
+            <input id="allRules" type="checkbox" ${allSelected ? "checked" : ""} />
+            <span>Все подгруппы внутри орфограммы</span>
+            <b>${rules.reduce((sum, rule) => sum + rule.count, 0)}</b>
+          </label>
+          ${ruleOptions}
+        </div>
         <div class="selected-rule">
-          <b>${activeRule?.count || 0}</b>
-          <span>слов в диапазоне</span>
+          <b>${selectedCount}</b>
+          <span>слов в выбранных подгруппах</span>
         </div>
       </div>
     </section>
@@ -308,9 +341,9 @@ function renderRuleSelector() {
 }
 
 async function startPractice() {
-  const count = Number(document.querySelector("#questionCount").value);
+  const count = state.questionCount;
   const payload = { mode: state.mode, count };
-  if (state.mode === "rule") payload.rule_id = state.selectedRuleId;
+  if (state.mode === "rule") payload.rule_ids = state.selectedRuleIds;
   const setup = document.querySelector("#setupView");
   try {
     const data = await api("/api/practice/start", {
@@ -426,7 +459,7 @@ function renderResults(data) {
           <b>${index + 1}. ${item.is_correct ? "Верно" : "Повторим еще"}</b>
           <p>Ответ: ${item.given_answer || "—"} · правильно: ${item.correct_answer}</p>
           <p>${item.correct_spelling || ""}</p>
-          <p class="muted">${item.explanation || ""}</p>
+          ${item.is_correct ? "" : `<p class="muted">${item.explanation || ""}</p>`}
         </div>
       `).join("")}
     </div>
@@ -446,12 +479,26 @@ async function showProgress() {
     <tr><td>${row.display_name}</td><td>${row.total}</td><td>${pct(row.correct, row.total)}</td></tr>
   `).join("");
   const ruleRows = data.by_rule.map((row) => `
-    <tr><td>${row.rule_name}</td><td>${row.total}</td><td>${pct(row.correct, row.total)}</td></tr>
+    <tr><td>${row.category}</td><td>${row.rule_name}</td><td>${row.total}</td><td>${pct(row.correct, row.total)}</td></tr>
+  `).join("");
+  const categoryRows = data.by_category.map((row) => `
+    <tr><td>${row.category}</td><td>${row.total}</td><td>${pct(row.correct, row.total)}</td></tr>
+  `).join("");
+  const answerListRows = (rows) => rows.slice(0, 30).map((row) => `
+    <tr>
+      <td>${row.display_name}</td>
+      <td>${row.category || ""}</td>
+      <td>${row.rule_name || ""}</td>
+      <td>${row.prompt}</td>
+      <td>${row.given_answer || "—"} / ${row.correct_answer}</td>
+    </tr>
   `).join("");
   const recentRows = data.recent.map((row) => `
     <tr>
       <td>${new Date(row.created_at).toLocaleString()}</td>
       <td>${row.display_name}</td>
+      <td>${row.category || ""}</td>
+      <td>${row.rule_name || ""}</td>
       <td>${row.prompt}</td>
       <td>${row.given_answer} / ${row.correct_answer}</td>
       <td>${row.is_correct ? "да" : "нет"}</td>
@@ -470,10 +517,16 @@ async function showProgress() {
       </div>
       ${state.user.role !== "teacher" ? `<div class="stat"><b>${data.due_reviews}</b><span>слов в очереди повторения</span></div>` : ""}
       ${state.user.role === "teacher" ? `<h3>Ученики</h3><table class="table"><tr><th>Имя</th><th>Ответов</th><th>Точность</th></tr>${studentRows}</table>` : ""}
-      <h3>Правила</h3>
-      <table class="table"><tr><th>Правило</th><th>Ответов</th><th>Точность</th></tr>${ruleRows}</table>
+      <h3>Группы</h3>
+      <table class="table"><tr><th>Группа</th><th>Ответов</th><th>Точность</th></tr>${categoryRows}</table>
+      <h3>Подгруппы</h3>
+      <table class="table"><tr><th>Группа</th><th>Подгруппа</th><th>Ответов</th><th>Точность</th></tr>${ruleRows}</table>
+      <h3>Решено верно</h3>
+      <table class="table"><tr><th>Ученик</th><th>Группа</th><th>Подгруппа</th><th>Задание</th><th>Ответ</th></tr>${answerListRows(data.correct_attempts)}</table>
+      <h3>Решено неверно</h3>
+      <table class="table"><tr><th>Ученик</th><th>Группа</th><th>Подгруппа</th><th>Задание</th><th>Ответ</th></tr>${answerListRows(data.incorrect_attempts)}</table>
       <h3>Последние попытки</h3>
-      <table class="table"><tr><th>Дата</th><th>Пользователь</th><th>Задание</th><th>Ответ</th><th>Верно</th></tr>${recentRows}</table>
+      <table class="table"><tr><th>Дата</th><th>Пользователь</th><th>Группа</th><th>Подгруппа</th><th>Задание</th><th>Ответ</th><th>Верно</th></tr>${recentRows}</table>
     </section>
   `;
   document.body.append(backdrop);
@@ -481,3 +534,4 @@ async function showProgress() {
 }
 
 restoreSession();
+
