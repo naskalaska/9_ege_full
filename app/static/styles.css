@@ -98,7 +98,7 @@ select {
   width: min(1380px, calc(100vw - 36px));
   margin: 34px auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px 340px;
+  grid-template-columns: minmax(0, 1fr) 330px 300px;
   gap: 24px;
 }
 
@@ -118,6 +118,18 @@ select {
     linear-gradient(120deg, rgba(31, 42, 39, 0.88), rgba(31, 42, 39, 0.28)),
     radial-gradient(circle at 85% 24%, rgba(243, 195, 91, 0.62), transparent 22%),
     linear-gradient(45deg, #2f7d5c, #3d6fb6 52%, #b84a3a);
+}
+
+.hero-logo {
+  position: absolute;
+  z-index: 2;
+  top: 28px;
+  left: 32px;
+  width: 118px;
+  max-height: 118px;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
 }
 
 .letter-grid {
@@ -143,9 +155,10 @@ select {
 
 .hero-copy {
   position: absolute;
+  z-index: 2;
   left: 42px;
   right: 42px;
-  bottom: 38px;
+  bottom: 78px;
   color: #fff;
 }
 
@@ -162,6 +175,17 @@ select {
   font-size: 18px;
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.82);
+}
+
+.hero-contact {
+  position: absolute;
+  z-index: 2;
+  left: 42px;
+  right: 42px;
+  bottom: 30px;
+  color: #fff;
+  font-weight: 800;
+  text-decoration-color: rgba(255, 255, 255, 0.45);
 }
 
 .login-panel,
@@ -181,6 +205,12 @@ select {
   flex-direction: column;
   justify-content: center;
   gap: 16px;
+}
+
+.register-panel {
+  padding: 20px;
+  gap: 12px;
+  justify-content: start;
 }
 
 .login-panel h2 {
@@ -214,6 +244,35 @@ input[type="checkbox"] {
   width: 18px;
   height: 18px;
   accent-color: var(--green);
+}
+
+input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--green);
+}
+
+.role-choice {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.role-choice label {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.warning-note {
+  padding: 10px;
+  border-radius: 8px;
+  background: #fff7df;
 }
 
 button {
@@ -608,6 +667,101 @@ button {
   margin: 14px 0;
 }
 
+.teacher-quick-panel {
+  margin: 16px 0 0;
+  padding-bottom: 4px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-head h3,
+.student-lists h4 {
+  margin: 0;
+}
+
+.student-card-grid,
+.admin-list {
+  display: grid;
+  gap: 12px;
+}
+
+.student-card,
+.admin-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.student-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.student-card-head b,
+.student-card-head span {
+  display: block;
+}
+
+.mini-stat {
+  min-width: 82px;
+  text-align: right;
+}
+
+.mini-stat b {
+  display: block;
+  font-size: 20px;
+}
+
+.mini-stat span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.teacher-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.student-lists {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.student-lists h4 {
+  font-size: 13px;
+  color: var(--green-dark);
+}
+
+.student-lists ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.activity-details {
+  margin-top: 16px;
+}
+
+.activity-details summary {
+  cursor: pointer;
+  font-weight: 900;
+  color: var(--green-dark);
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -638,7 +792,9 @@ button {
   .setup-grid,
   .category-grid,
   .rule-select-row,
-  .progress-grid {
+  .progress-grid,
+  .teacher-metrics,
+  .student-lists {
     grid-template-columns: 1fr;
   }
 
@@ -654,4 +810,5 @@ button {
     inset: 22px;
   }
 }
+
 
