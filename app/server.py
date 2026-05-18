@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = ROOT / "app" / "static"
 DATA_DIR = ROOT / "data"
-WORDS_PATH = ROOT / "ege9_final_grouped_by_orthogram_v3.json"
+WORDS_PATH = ROOT / "ege9_final_grouped_by_orthogram_v4.json"
 DB_PATH = DATA_DIR / "ege_app.db"
 
 DEFAULT_HOST = "127.0.0.1"
