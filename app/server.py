@@ -26,6 +26,8 @@ DB_PATH = DATA_DIR / "ege_app.db"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
 REPEAT_ON_ERROR = 3
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "admin2026"
 
 SESSIONS: dict[str, dict[str, Any]] = {}
 PRACTICE_SESSIONS: dict[str, dict[str, Any]] = {}
@@ -51,6 +53,44 @@ def ensure_column(con: sqlite3.Connection, table: str, column: str, definition: 
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def ensure_admin_role_supported(con: sqlite3.Connection) -> None:
+    table = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+    ).fetchone()
+    if not table or "'admin'" in (table[0] or ""):
+        return
+
+    con.execute("PRAGMA foreign_keys = OFF")
+    con.execute("ALTER TABLE users RENAME TO users_old")
+    con.execute(
+        """
+        CREATE TABLE users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'teacher', 'student')),
+            password_salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            teacher_code TEXT,
+            teacher_id TEXT
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO users
+            (user_id, username, display_name, role, password_salt, password_hash,
+             created_at, teacher_code, teacher_id)
+        SELECT user_id, username, display_name, role, password_salt, password_hash,
+               created_at, teacher_code, teacher_id
+        FROM users_old
+        """
+    )
+    con.execute("DROP TABLE users_old")
+    con.execute("PRAGMA foreign_keys = ON")
+
+
 def ensure_app_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as con:
@@ -60,7 +100,7 @@ def ensure_app_db() -> None:
                 user_id TEXT PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 display_name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('teacher', 'student')),
+                role TEXT NOT NULL CHECK(role IN ('admin', 'teacher', 'student')),
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -108,8 +148,10 @@ def ensure_app_db() -> None:
         )
         ensure_column(con, "users", "teacher_code", "TEXT")
         ensure_column(con, "users", "teacher_id", "TEXT")
+        ensure_admin_role_supported(con)
         ensure_column(con, "attempts", "scope_id", "TEXT")
         ensure_column(con, "attempts", "word_id", "TEXT")
+        seed_user(con, ADMIN_USERNAME, ADMIN_PASSWORD, "admin", "Администратор")
         seed_user(con, "teacher", "teacher123", "teacher", "Учитель")
         seed_user(con, "student", "student123", "student", "Ученик")
         con.execute(
@@ -269,6 +311,11 @@ def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "teacher_code": row["teacher_code"] if row["role"] == "teacher" else None,
         "teacher_id": row["teacher_id"] if row["role"] == "student" else None,
     }
+
+
+def require_admin(user: dict[str, Any]) -> None:
+    if user["role"] != "admin":
+        raise PermissionError("Админ-страница доступна только администратору.")
 
 
 def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
@@ -670,8 +717,7 @@ def teacher_dashboard(con: sqlite3.Connection, teacher_id: str) -> dict[str, Any
 
 
 def admin_overview(user: dict[str, Any]) -> dict[str, Any]:
-    if user["role"] != "teacher":
-        raise PermissionError("Админ-страница доступна только учителю.")
+    require_admin(user)
     with db() as con:
         platform = con.execute(
             """
