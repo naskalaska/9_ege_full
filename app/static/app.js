@@ -223,6 +223,10 @@ async function restoreSession() {
 
 function renderDashboard() {
   renderTopActions();
+  if (state.user.role === "admin") {
+    renderAdminDashboard();
+    return;
+  }
   ensureRuleSelection();
   const template = document.querySelector("#dashboardTemplate").content.cloneNode(true);
   view.replaceChildren(template);
@@ -231,8 +235,6 @@ function renderDashboard() {
   document.querySelector("#progressButton").addEventListener("click", showProgress);
   if (state.user.role === "teacher") {
     renderTeacherDashboardPreview();
-  } else if (state.user.role === "admin") {
-    showAdmin();
   }
 }
 
@@ -635,10 +637,7 @@ async function showProgress() {
   backdrop.querySelector("#closeProgress").addEventListener("click", () => backdrop.remove());
 }
 
-async function showAdmin() {
-  const data = await api("/api/admin");
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop";
+function renderAdminContent(data, closeButton = "") {
   const platform = data.platform;
   const teacherCards = data.teachers.map((teacher) => {
     const students = teacher.students_list.length
@@ -668,18 +667,44 @@ async function showAdmin() {
       </article>
     `;
   }).join("");
+  return `
+    <div class="panel-head">
+      <div><p class="eyebrow">админ</p><h2>Обзор платформы</h2></div>
+      ${closeButton}
+    </div>
+    <div class="progress-grid">
+      <div class="stat"><b>${platform.total}</b><span>ответов всего</span></div>
+      <div class="stat"><b>${platform.active_users}</b><span>активных пользователей</span></div>
+      <div class="stat"><b>${pct(platform.correct, platform.total)}</b><span>общая точность</span></div>
+    </div>
+    <div class="admin-list">${teacherCards}</div>
+  `;
+}
+
+async function renderAdminDashboard() {
+  view.innerHTML = `
+    <section class="workspace admin-workspace">
+      <section class="main-panel admin-page">
+        <p class="muted">Загружаю админ-панель...</p>
+      </section>
+    </section>
+  `;
+  const panel = view.querySelector(".admin-page");
+  try {
+    const data = await api("/api/admin");
+    panel.innerHTML = renderAdminContent(data);
+  } catch (err) {
+    panel.innerHTML = `<p class="error">${err.message}</p>`;
+  }
+}
+
+async function showAdmin() {
+  const data = await api("/api/admin");
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
     <section class="progress-modal admin-modal">
-      <div class="panel-head">
-        <div><p class="eyebrow">админ</p><h2>Обзор платформы</h2></div>
-        <button class="secondary-button" id="closeAdmin" type="button">Закрыть</button>
-      </div>
-      <div class="progress-grid">
-        <div class="stat"><b>${platform.total}</b><span>ответов всего</span></div>
-        <div class="stat"><b>${platform.active_users}</b><span>активных пользователей</span></div>
-        <div class="stat"><b>${pct(platform.correct, platform.total)}</b><span>общая точность</span></div>
-      </div>
-      <div class="admin-list">${teacherCards}</div>
+      ${renderAdminContent(data, `<button class="secondary-button" id="closeAdmin" type="button">Закрыть</button>`)}
     </section>
   `;
   document.body.append(backdrop);
