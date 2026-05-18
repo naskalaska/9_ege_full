@@ -82,7 +82,8 @@ function renderTopActions() {
   if (!state.user) return;
   const role = document.createElement("span");
   role.className = "muted";
-  role.textContent = `${state.user.display_name} · ${state.user.role === "teacher" ? "учитель" : "ученик"}`;
+  const roleNames = { admin: "администратор", teacher: "учитель", student: "ученик" };
+  role.textContent = `${state.user.display_name} · ${roleNames[state.user.role] || state.user.role}`;
   const logout = document.createElement("button");
   logout.className = "ghost-button";
   logout.textContent = "Выйти";
@@ -94,7 +95,7 @@ function renderTopActions() {
     renderLogin();
   });
   topActions.append(role);
-  if (state.user.role === "teacher") {
+  if (state.user.role === "admin") {
     const admin = document.createElement("button");
     admin.className = "ghost-button";
     admin.textContent = "Админ";
@@ -230,6 +231,8 @@ function renderDashboard() {
   document.querySelector("#progressButton").addEventListener("click", showProgress);
   if (state.user.role === "teacher") {
     renderTeacherDashboardPreview();
+  } else if (state.user.role === "admin") {
+    showAdmin();
   }
 }
 
@@ -239,7 +242,7 @@ function renderSidebar() {
     : "";
   document.querySelector("#userBlock").innerHTML = `
     <strong>${state.user.display_name}</strong>
-    <span class="muted">${state.user.role === "teacher" ? "Кабинет учителя" : "Кабинет ученика"}</span>
+    <span class="muted">${state.user.role === "admin" ? "Кабинет администратора" : state.user.role === "teacher" ? "Кабинет учителя" : "Кабинет ученика"}</span>
     ${teacherCode}
   `;
   const list = document.querySelector("#modeList");
@@ -684,5 +687,4 @@ async function showAdmin() {
 }
 
 restoreSession();
-
 
