@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import io
 import json
 import mimetypes
 import os
@@ -13,7 +15,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,9 +74,10 @@ def ensure_admin_role_supported(con: sqlite3.Connection) -> None:
             password_salt TEXT NOT NULL,
             password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            teacher_code TEXT,
-            teacher_id TEXT
-        )
+                teacher_code TEXT,
+                teacher_id TEXT,
+                password_reset_required INTEGER NOT NULL DEFAULT 0
+            )
         """
     )
     con.execute(
@@ -148,6 +151,7 @@ def ensure_app_db() -> None:
         )
         ensure_column(con, "users", "teacher_code", "TEXT")
         ensure_column(con, "users", "teacher_id", "TEXT")
+        ensure_column(con, "users", "password_reset_required", "INTEGER NOT NULL DEFAULT 0")
         ensure_admin_role_supported(con)
         ensure_column(con, "attempts", "scope_id", "TEXT")
         ensure_column(con, "attempts", "word_id", "TEXT")
@@ -237,9 +241,6 @@ def register_user(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Для регистрации ученика нужен код учителя.")
 
     with db() as con:
-        if con.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
-            raise ValueError("Такой логин уже занят.")
-
         teacher_id = None
         own_teacher_code = None
         if role == "student":
@@ -252,6 +253,29 @@ def register_user(payload: dict[str, Any]) -> dict[str, Any]:
             teacher_id = teacher["user_id"]
         else:
             own_teacher_code = make_teacher_code()
+
+        existing = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            if not int(existing["password_reset_required"] or 0):
+                raise ValueError("Такой логин уже занят.")
+            if existing["role"] != role:
+                raise ValueError("Для восстановления выберите прежнюю роль.")
+            if role == "student" and existing["teacher_id"] != teacher_id:
+                raise ValueError("Код учителя не совпадает с текущим аккаунтом.")
+            salt = secrets.token_hex(8)
+            con.execute(
+                """
+                UPDATE users
+                SET display_name = COALESCE(NULLIF(?, ''), display_name),
+                    password_salt = ?,
+                    password_hash = ?,
+                    password_reset_required = 0
+                WHERE user_id = ?
+                """,
+                (display_name, salt, password_hash(password, salt), existing["user_id"]),
+            )
+            row = con.execute("SELECT * FROM users WHERE user_id = ?", (existing["user_id"],)).fetchone()
+            return public_user(row)
 
         salt = secrets.token_hex(8)
         user_id = f"user_{secrets.token_hex(8)}"
@@ -356,10 +380,10 @@ def parse_json_body(handler: SimpleHTTPRequestHandler) -> dict[str, Any]:
 
 
 def scope_id_for(mode: str, rule_id: str | None = None, rule_ids: list[str] | None = None) -> str:
-    if mode == "rule":
+    if mode in {"rule", "word_letter"}:
         if rule_ids:
             digest = hashlib.sha1("|".join(sorted(rule_ids)).encode("utf-8")).hexdigest()[:16]
-            return f"rules:{digest}"
+            return f"{mode}:rules:{digest}"
         return f"rule:{rule_id}"
     if mode == "mix":
         return "mix:all"
@@ -640,6 +664,55 @@ def normalize_given_answer(question: dict[str, Any], value: Any) -> str:
     return raw
 
 
+def record_attempt(
+    con: sqlite3.Connection,
+    user_id: str,
+    session: dict[str, Any],
+    question_id: str,
+    question: dict[str, Any],
+    given: str,
+    elapsed: Any = None,
+) -> dict[str, Any]:
+    correct = question["correct_answer"].strip().lower()
+    is_correct = int(given == correct)
+    word_id = question.get("source_word_id")
+    if word_id:
+        update_word_progress(con, user_id, session["scope_id"], word_id, is_correct)
+    con.execute(
+        """
+        INSERT INTO attempts
+            (attempt_id, user_id, mode, scope_id, word_id, rule_id, category, rule_name,
+             question_id, prompt, given_answer, correct_answer, is_correct, created_at, time_spent_sec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            secrets.token_hex(12),
+            user_id,
+            session["mode"],
+            session["scope_id"],
+            word_id,
+            question.get("rule_id"),
+            question.get("category"),
+            question.get("rule_name"),
+            question_id,
+            question.get("prompt"),
+            given,
+            correct,
+            is_correct,
+            now_iso(),
+            elapsed,
+        ),
+    )
+    return {
+        "question_id": question_id,
+        "is_correct": bool(is_correct),
+        "given_answer": given,
+        "correct_answer": correct,
+        "explanation": question.get("explanation"),
+        "correct_spelling": question.get("correct_spelling"),
+    }
+
+
 def error_bank_words(user_id: str) -> list[dict[str, Any]]:
     with db() as con:
         rows = con.execute(
@@ -758,7 +831,7 @@ def admin_overview(user: dict[str, Any]) -> dict[str, Any]:
         ).fetchone()
         teachers = con.execute(
             """
-            SELECT t.user_id, t.display_name, t.username, t.teacher_code,
+            SELECT t.user_id, t.display_name, t.username, t.teacher_code, t.password_reset_required,
                    COUNT(DISTINCT s.user_id) AS students,
                    COUNT(a.attempt_id) AS attempts,
                    COALESCE(SUM(a.is_correct), 0) AS correct
@@ -776,7 +849,7 @@ def admin_overview(user: dict[str, Any]) -> dict[str, Any]:
             placeholders = ",".join("?" for _ in teacher_ids)
             student_rows = con.execute(
                 f"""
-                SELECT s.teacher_id, s.display_name, s.username,
+                SELECT s.user_id, s.teacher_id, s.display_name, s.username, s.password_reset_required,
                        COUNT(a.attempt_id) AS attempts,
                        COALESCE(SUM(a.is_correct), 0) AS correct
                 FROM users s
@@ -805,7 +878,7 @@ def admin_overview(user: dict[str, Any]) -> dict[str, Any]:
 def start_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     mode = payload.get("mode")
     count = max(1, min(int(payload.get("count") or 10), 30))
-    if mode == "rule":
+    if mode in {"rule", "word_letter"}:
         raw_rule_ids = payload.get("rule_ids")
         if isinstance(raw_rule_ids, list):
             rule_ids = [str(rule_id) for rule_id in raw_rule_ids if str(rule_id) in WORDS_BY_RULE]
@@ -850,8 +923,29 @@ def start_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
         "scope_id": scope_id,
         "started_at": now_iso(),
         "questions": answer_key,
+        "answered": {},
     }
     return {"session_id": session_id, "questions": public_questions}
+
+
+def check_practice_answer(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    session_id = payload.get("session_id")
+    question_id = str(payload.get("question_id") or "")
+    session = PRACTICE_SESSIONS.get(session_id)
+    if not session or session["user_id"] != user["user_id"]:
+        raise ValueError("Сессия тренировки не найдена.")
+    question = session["questions"].get(question_id)
+    if not question:
+        raise ValueError("Вопрос не найден.")
+    if question_id in session["answered"]:
+        return session["answered"][question_id]
+    given = normalize_given_answer(question, payload.get("answer", ""))
+    with db() as con:
+        result = record_attempt(con, user["user_id"], session, question_id, question, given, payload.get("time_spent_sec"))
+    session["answered"][question_id] = result
+    if len(session["answered"]) >= len(session["questions"]):
+        PRACTICE_SESSIONS.pop(session_id, None)
+    return result
 
 
 def submit_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -865,47 +959,11 @@ def submit_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     results = []
     with db() as con:
         for question_id, question in session["questions"].items():
+            if question_id in session.get("answered", {}):
+                results.append(session["answered"][question_id])
+                continue
             given = normalize_given_answer(question, answers.get(question_id, ""))
-            correct = question["correct_answer"].strip().lower()
-            is_correct = int(given == correct)
-            word_id = question.get("source_word_id")
-            if word_id:
-                update_word_progress(con, user["user_id"], session["scope_id"], word_id, is_correct)
-            con.execute(
-                """
-                INSERT INTO attempts
-                    (attempt_id, user_id, mode, scope_id, word_id, rule_id, category, rule_name,
-                     question_id, prompt, given_answer, correct_answer, is_correct, created_at, time_spent_sec)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    secrets.token_hex(12),
-                    user["user_id"],
-                    session["mode"],
-                    session["scope_id"],
-                    word_id,
-                    question.get("rule_id"),
-                    question.get("category"),
-                    question.get("rule_name"),
-                    question_id,
-                    question.get("prompt"),
-                    given,
-                    correct,
-                    is_correct,
-                    now_iso(),
-                    elapsed,
-                ),
-            )
-            results.append(
-                {
-                    "question_id": question_id,
-                    "is_correct": bool(is_correct),
-                    "given_answer": given,
-                    "correct_answer": correct,
-                    "explanation": question.get("explanation"),
-                    "correct_spelling": question.get("correct_spelling"),
-                }
-            )
+            results.append(record_attempt(con, user["user_id"], session, question_id, question, given, elapsed))
     PRACTICE_SESSIONS.pop(session_id, None)
     return {
         "results": results,
@@ -1026,6 +1084,145 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def require_teacher(user: dict[str, Any]) -> None:
+    if user["role"] != "teacher":
+        raise PermissionError("Функция доступна только учителю.")
+
+
+def csv_bytes(rows: list[dict[str, Any]], headers: list[tuple[str, str]]) -> bytes:
+    output = io.StringIO()
+    output.write("\ufeff")
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow([title for _, title in headers])
+    for row in rows:
+        writer.writerow([row.get(key, "") for key, _ in headers])
+    return output.getvalue().encode("utf-8")
+
+
+def progress_export(user: dict[str, Any], section: str) -> tuple[bytes, str, str]:
+    data = progress_for(user)
+    if section == "students":
+        rows = [
+            {
+                "name": row["display_name"],
+                "username": row["username"],
+                "total": row["total"],
+                "correct": row["correct"],
+                "accuracy": f"{round((row['correct'] / row['total']) * 100) if row['total'] else 0}%",
+            }
+            for row in data["by_student"]
+        ]
+        headers = [("name", "Имя"), ("username", "Логин"), ("total", "Ответов"), ("correct", "Верно"), ("accuracy", "Точность")]
+    elif section == "categories":
+        rows = data["by_category"]
+        headers = [("category", "Группа"), ("total", "Ответов"), ("correct", "Верно")]
+    elif section == "rules":
+        rows = data["by_rule"]
+        headers = [("category", "Группа"), ("rule_name", "Подгруппа"), ("total", "Ответов"), ("correct", "Верно")]
+    elif section == "correct":
+        rows = data["correct_attempts"]
+        headers = [("display_name", "Ученик"), ("category", "Группа"), ("rule_name", "Подгруппа"), ("prompt", "Задание"), ("given_answer", "Ответ"), ("correct_answer", "Правильно")]
+    elif section == "incorrect":
+        rows = data["incorrect_attempts"]
+        headers = [("display_name", "Ученик"), ("category", "Группа"), ("rule_name", "Подгруппа"), ("prompt", "Задание"), ("given_answer", "Ответ"), ("correct_answer", "Правильно")]
+    else:
+        rows = data["recent"]
+        headers = [("created_at", "Дата"), ("display_name", "Пользователь"), ("category", "Группа"), ("rule_name", "Подгруппа"), ("prompt", "Задание"), ("given_answer", "Ответ"), ("correct_answer", "Правильно"), ("is_correct", "Верно")]
+    filename = f"ege_statistics_{section}.csv"
+    return csv_bytes(rows, headers), filename, "text/csv; charset=utf-8"
+
+
+def teacher_error_pool(teacher_id: str) -> list[dict[str, Any]]:
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT a.word_id, MAX(a.created_at) AS last_error_at
+            FROM attempts a
+            JOIN users u ON u.user_id = a.user_id
+            WHERE u.teacher_id = ? AND a.is_correct = 0 AND a.word_id IS NOT NULL
+            GROUP BY a.word_id
+            ORDER BY last_error_at DESC
+            """,
+            (teacher_id,),
+        ).fetchall()
+    return [WORD_BY_ID[row["word_id"]] for row in rows if row["word_id"] in WORD_BY_ID]
+
+
+def test_words_for_payload(user: dict[str, Any], payload: dict[str, Any], count: int) -> tuple[str, list[dict[str, Any]]]:
+    mode = str(payload.get("mode") or "rule")
+    include_errors = bool(payload.get("include_errors"))
+    pool: list[dict[str, Any]] = []
+    if mode == "rule":
+        rule_ids = [str(rule_id) for rule_id in payload.get("rule_ids", []) if str(rule_id) in WORDS_BY_RULE]
+        for rule_id in dict.fromkeys(rule_ids):
+            pool.extend(WORDS_BY_RULE[rule_id])
+        title = "Тест по выбранным темам"
+    elif mode == "mix":
+        pool = list(WORDS)
+        title = "Смешанный тест"
+    elif mode == "errors":
+        pool = teacher_error_pool(user["user_id"])
+        title = "Тест по копилке ошибок"
+    else:
+        raise ValueError("Для файла выберите режим: темы, микс или копилка ошибок.")
+    if include_errors and mode != "errors":
+        seen = {word["id"] for word in pool}
+        pool.extend(word for word in teacher_error_pool(user["user_id"]) if word["id"] not in seen)
+    if not pool:
+        raise ValueError("Нет слов для составления теста.")
+    random.shuffle(pool)
+    return title, pool[: min(count, len(pool))]
+
+
+def build_test_file(user: dict[str, Any], payload: dict[str, Any]) -> tuple[bytes, str, str]:
+    require_teacher(user)
+    count = max(1, min(int(payload.get("count") or 10), 60))
+    mode = str(payload.get("mode") or "rule")
+    lines = [f"Тест: {now_iso()}", ""]
+    answers = ["Ответы", ""]
+    if mode == "line":
+        for index in range(1, count + 1):
+            question = make_line_question()
+            lines.append(f"{index}. {question['prompt']}")
+            for row_index, row in enumerate(question["rows"], start=1):
+                lines.append(f"   {row_index}) {', '.join(row)}")
+            lines.append("")
+            answers.append(f"{index}. {question['_correct_answer']} — {question['correct_spelling']}")
+        filename = "ege_test_lines.txt"
+    else:
+        title, words = test_words_for_payload(user, payload, count)
+        lines[0] = f"{title}: {now_iso()}"
+        for index, word in enumerate(words, start=1):
+            lines.append(f"{index}. {word['variant']}")
+            answers.append(f"{index}. {word['correct_letter']} — {word['correct_spelling']} ({word['rule_name']})")
+        filename = "ege_test.txt"
+    body = "\n".join(lines + ["", ""] + answers) + "\n"
+    return body.encode("utf-8"), filename, "text/plain; charset=utf-8"
+
+
+def reset_user_password(admin: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    require_admin(admin)
+    user_id = str(payload.get("user_id") or "")
+    if not user_id or user_id == admin["user_id"]:
+        raise ValueError("Нельзя сбросить пароль этому пользователю.")
+    with db() as con:
+        row = con.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if not row:
+            raise ValueError("Пользователь не найден.")
+        salt = secrets.token_hex(8)
+        con.execute(
+            """
+            UPDATE users
+            SET password_salt = ?,
+                password_hash = ?,
+                password_reset_required = 1
+            WHERE user_id = ?
+            """,
+            (salt, password_hash(secrets.token_urlsafe(32), salt), user_id),
+        )
+    return {"ok": True, "username": row["username"]}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -1038,6 +1235,14 @@ class Handler(SimpleHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_download(self, body: bytes, filename: str, content_type: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1072,6 +1277,10 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json({"user": self.current_user()})
             elif parsed.path == "/api/progress":
                 self.send_json(progress_for(self.require_user()))
+            elif parsed.path == "/api/progress/export":
+                query = parse_qs(parsed.query)
+                body, filename, content_type = progress_export(self.require_user(), query.get("section", ["recent"])[0])
+                self.send_download(body, filename, content_type)
             elif parsed.path == "/api/admin":
                 self.send_json(admin_overview(self.require_user()))
             elif parsed.path.startswith("/images/"):
@@ -1104,6 +1313,9 @@ class Handler(SimpleHTTPRequestHandler):
                 password = str(payload.get("password") or "")
                 with db() as con:
                     row = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+                if row and int(row["password_reset_required"] or 0):
+                    self.send_json({"error": "Пароль сброшен администратором. Зарегистрируйтесь с тем же логином и кодом учителя, чтобы задать новый пароль."}, HTTPStatus.UNAUTHORIZED)
+                    return
                 if not row or password_hash(password, row["password_salt"]) != row["password_hash"]:
                     self.send_json({"error": "Неверный логин или пароль."}, HTTPStatus.UNAUTHORIZED)
                     return
@@ -1125,6 +1337,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(start_practice(self.require_user(), payload))
             elif parsed.path == "/api/practice/submit":
                 self.send_json(submit_practice(self.require_user(), payload))
+            elif parsed.path == "/api/practice/check":
+                self.send_json(check_practice_answer(self.require_user(), payload))
+            elif parsed.path == "/api/teacher/test":
+                body, filename, content_type = build_test_file(self.require_user(), payload)
+                self.send_download(body, filename, content_type)
+            elif parsed.path == "/api/admin/reset-password":
+                self.send_json(reset_user_password(self.require_user(), payload))
             else:
                 self.send_json({"error": "Unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except PermissionError as error:
@@ -1147,4 +1366,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
