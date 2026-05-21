@@ -9,6 +9,9 @@ const state = {
   answers: {},
   startedAt: null,
   questionCount: 10,
+  manualInput: false,
+  currentQuestionIndex: 0,
+  liveResults: [],
 };
 
 const modes = {
@@ -16,6 +19,11 @@ const modes = {
     title: "Правило",
     hint: "Большая группа и подвыбор внутри нее",
     eyebrow: "точечная отработка",
+  },
+  word_letter: {
+    title: "Слово - буква",
+    hint: "Одно слово на экране, ввод буквы и мгновенная проверка",
+    eyebrow: "быстрая отработка",
   },
   mix: {
     title: "Микс",
@@ -45,6 +53,23 @@ function api(path, options = {}) {
     if (!response.ok) throw new Error(data.error || "Ошибка запроса");
     return data;
   });
+}
+
+async function downloadRequest(path, filename, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body) headers["Content-Type"] = "application/json";
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  const response = await fetch(path, { ...options, headers });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ error: "Ошибка скачивания" }));
+    throw new Error(data.error || "Ошибка скачивания");
+  }
+  const blob = await response.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function pct(correct, total) {
@@ -279,7 +304,7 @@ function renderMode() {
 
 function renderSetup() {
   const setup = document.querySelector("#setupView");
-  const ruleSelector = state.mode === "rule" ? renderRuleSelector() : "";
+  const ruleSelector = ["rule", "word_letter"].includes(state.mode) ? renderRuleSelector() : "";
   setup.innerHTML = `
     <div class="setup-grid">
       <label>
@@ -288,12 +313,19 @@ function renderSetup() {
       </label>
       <button class="primary-button" id="startPractice" type="button">Начать</button>
     </div>
+    <label class="manual-toggle">
+      <input id="manualInput" type="checkbox" ${state.manualInput || state.mode === "word_letter" ? "checked" : ""} ${state.mode === "word_letter" ? "disabled" : ""} />
+      <span>Самостоятельно вводить ответ с клавиатуры</span>
+    </label>
     ${ruleSelector}
   `;
   setup.querySelector("#startPractice").addEventListener("click", startPractice);
   setup.querySelector("#questionCount").addEventListener("input", (event) => {
     state.questionCount = Number(event.target.value);
     setup.querySelector("#questionCountValue").textContent = state.questionCount;
+  });
+  setup.querySelector("#manualInput").addEventListener("change", (event) => {
+    state.manualInput = event.target.checked;
   });
   setup.querySelectorAll("[data-category]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -370,7 +402,7 @@ function renderRuleSelector() {
 async function startPractice() {
   const count = state.questionCount;
   const payload = { mode: state.mode, count };
-  if (state.mode === "rule") payload.rule_ids = state.selectedRuleIds;
+  if (["rule", "word_letter"].includes(state.mode)) payload.rule_ids = state.selectedRuleIds;
   const setup = document.querySelector("#setupView");
   try {
     const data = await api("/api/practice/start", {
@@ -379,12 +411,101 @@ async function startPractice() {
     });
     state.currentSession = data;
     state.answers = {};
+    state.liveResults = [];
+    state.currentQuestionIndex = 0;
     state.startedAt = Date.now();
     setup.innerHTML = "";
-    renderQuestions();
+    if (state.mode === "word_letter") {
+      renderLiveQuestion();
+    } else {
+      renderQuestions();
+    }
   } catch (err) {
     setup.insertAdjacentHTML("beforeend", `<p class="error">${err.message}</p>`);
   }
+}
+
+function normalizeLetter(value) {
+  return String(value || "").trim().toLowerCase().replace("ё", "ё").slice(0, 1);
+}
+
+function renderLiveQuestion(feedback = null) {
+  const practice = document.querySelector("#practiceView");
+  const result = document.querySelector("#resultView");
+  result.classList.add("hidden");
+  practice.classList.remove("hidden");
+  const question = state.currentSession.questions[state.currentQuestionIndex];
+  if (!question) {
+    renderResults({
+      results: state.liveResults,
+      correct: state.liveResults.filter((item) => item.is_correct).length,
+      total: state.liveResults.length,
+    });
+    return;
+  }
+  practice.innerHTML = `
+    <article class="question live-question">
+      <div class="question-head">
+        <span>Слово ${state.currentQuestionIndex + 1} из ${state.currentSession.questions.length}</span>
+        <span>${question.rule_name}</span>
+      </div>
+      <div class="word-prompt">${question.prompt}</div>
+      <div class="letter-input-row">
+        <input id="liveAnswer" maxlength="1" autocomplete="off" inputmode="text" aria-label="Введите букву" />
+        <button class="primary-button" id="checkLiveAnswer" type="button">Проверить</button>
+      </div>
+      <div id="liveFeedback">${feedback || ""}</div>
+    </article>
+    <div class="practice-actions">
+      <button class="ghost-button" id="cancelPractice" type="button">Сбросить</button>
+    </div>
+  `;
+  const input = practice.querySelector("#liveAnswer");
+  const check = practice.querySelector("#checkLiveAnswer");
+  const send = async () => {
+    const answer = normalizeLetter(input.value);
+    if (!answer) return;
+    check.disabled = true;
+    const elapsed = Math.round((Date.now() - state.startedAt) / 1000);
+    const item = await api("/api/practice/check", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: state.currentSession.session_id,
+        question_id: question.question_id,
+        answer,
+        time_spent_sec: elapsed,
+      }),
+    });
+    state.liveResults.push(item);
+    if (item.is_correct) {
+      state.currentQuestionIndex += 1;
+      renderLiveQuestion();
+      return;
+    }
+    renderLiveQuestion(`
+      <div class="result-item bad">
+        <b>Неверно. Правильно: ${item.correct_answer}</b>
+        <p>${item.correct_spelling || ""}</p>
+        <p class="muted">${item.explanation || ""}</p>
+        <button class="secondary-button" id="nextAfterRule" type="button">Дальше</button>
+      </div>
+    `);
+    document.querySelector("#liveAnswer").disabled = true;
+    document.querySelector("#checkLiveAnswer").disabled = true;
+    const next = document.querySelector("#nextAfterRule");
+    next.disabled = true;
+    setTimeout(() => { next.disabled = false; }, 2500);
+    next.addEventListener("click", () => {
+      state.currentQuestionIndex += 1;
+      renderLiveQuestion();
+    });
+  };
+  check.addEventListener("click", send);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") send();
+  });
+  practice.querySelector("#cancelPractice").addEventListener("click", renderMode);
+  input.focus();
 }
 
 function renderQuestions() {
@@ -401,6 +522,13 @@ function renderQuestions() {
   `;
   practice.querySelector("#cancelPractice").addEventListener("click", renderMode);
   practice.querySelector("#submitPractice").addEventListener("click", submitPractice);
+  practice.querySelectorAll("[data-manual-answer]").forEach((input) => {
+    input.addEventListener("input", () => {
+      state.answers[input.dataset.manualAnswer] = input.dataset.kind === "line"
+        ? input.value
+        : normalizeLetter(input.value);
+    });
+  });
   practice.querySelectorAll("[data-answer]").forEach((button) => {
     button.addEventListener("click", () => {
       if (button.dataset.multi === "true") {
@@ -421,6 +549,24 @@ function renderQuestions() {
 
 function renderQuestion(question, index) {
   if (question.kind === "line") {
+    if (state.manualInput) {
+      return `
+        <article class="question">
+          <div class="question-head"><span>Вопрос ${index + 1}</span><span>${question.rule_name}</span></div>
+          <div>${question.prompt}</div>
+          ${question.rows.map((row, rowIndex) => `
+            <div class="line-row static-line-row">
+              <b>${rowIndex + 1}</b>
+              <span class="line-words">${row.map((word) => `<span>${word}</span>`).join("")}</span>
+            </div>
+          `).join("")}
+          <label class="answer-input-label">
+            Ответ вручную
+            <input data-manual-answer="${question.question_id}" data-kind="line" placeholder="например, 135" value="${state.answers[question.question_id] || ""}" />
+          </label>
+        </article>
+      `;
+    }
     const rows = question.rows
       .map((row, rowIndex) => {
         const answer = String(rowIndex + 1);
@@ -447,6 +593,18 @@ function renderQuestion(question, index) {
       return `<button class="choice ${selected ? "selected" : ""}" data-question-id="${question.question_id}" data-answer="${choice}" type="button">${choice}</button>`;
     })
     .join("");
+  if (state.manualInput) {
+    return `
+      <article class="question">
+        <div class="question-head"><span>Вопрос ${index + 1}</span><span>${question.rule_name}</span></div>
+        <div class="word-prompt">${question.prompt}</div>
+        <label class="answer-input-label">
+          Введите букву
+          <input data-manual-answer="${question.question_id}" maxlength="1" autocomplete="off" value="${state.answers[question.question_id] || ""}" />
+        </label>
+      </article>
+    `;
+  }
   return `
     <article class="question">
       <div class="question-head"><span>Вопрос ${index + 1}</span><span>${question.rule_name}</span></div>
@@ -458,7 +616,8 @@ function renderQuestion(question, index) {
 
 async function submitPractice() {
   const total = state.currentSession.questions.length;
-  if (Object.keys(state.answers).length < total) {
+  const answered = state.currentSession.questions.every((question) => String(state.answers[question.question_id] || "").trim());
+  if (Object.keys(state.answers).length < total || !answered) {
     alert("Ответьте на все вопросы перед проверкой.");
     return;
   }
@@ -552,14 +711,24 @@ async function renderTeacherDashboardPreview() {
           <p class="eyebrow">быстрая статистика</p>
           <h3>Ученики и зоны отработки</h3>
         </div>
-        <button class="secondary-button" id="openFullProgress" type="button">Полная активность</button>
+        <div class="button-row">
+          <button class="secondary-button" id="makeTestButton" type="button">Составить тест</button>
+          <button class="secondary-button" id="downloadStudents" type="button">Скачать статистику</button>
+          <button class="secondary-button" id="openFullProgress" type="button">Полная активность</button>
+        </div>
       </div>
       <div class="student-card-grid">${renderTeacherStudentCards(data.teacher_dashboard.students)}</div>
     `;
     panel.querySelector("#openFullProgress").addEventListener("click", showProgress);
+    panel.querySelector("#makeTestButton").addEventListener("click", showTestComposer);
+    panel.querySelector("#downloadStudents").addEventListener("click", () => downloadRequest("/api/progress/export?section=students", "ege_students.csv"));
   } catch (err) {
     panel.innerHTML = `<p class="error">${err.message}</p>`;
   }
+}
+
+function downloadButton(section, label) {
+  return `<button class="ghost-button download-stat" data-section="${section}" type="button">${label}</button>`;
 }
 
 async function showProgress() {
@@ -617,24 +786,110 @@ async function showProgress() {
         </div>
       ` : ""}
       ${teacherOverview}
-      ${state.user.role === "teacher" ? `<h3>Ученики</h3><table class="table"><tr><th>Имя</th><th>Ответов</th><th>Точность</th></tr>${studentRows}</table>` : ""}
-      <h3>Группы</h3>
+      ${state.user.role === "teacher" ? `<div class="table-head"><h3>Ученики</h3>${downloadButton("students", "Скачать статистику")}</div><table class="table"><tr><th>Имя</th><th>Ответов</th><th>Точность</th></tr>${studentRows}</table>` : ""}
+      <div class="table-head"><h3>Группы</h3>${downloadButton("categories", "Скачать статистику")}</div>
       <table class="table"><tr><th>Группа</th><th>Ответов</th><th>Точность</th></tr>${categoryRows}</table>
-      <h3>Подгруппы</h3>
+      <div class="table-head"><h3>Подгруппы</h3>${downloadButton("rules", "Скачать статистику")}</div>
       <table class="table"><tr><th>Группа</th><th>Подгруппа</th><th>Ответов</th><th>Точность</th></tr>${ruleRows}</table>
       <details class="activity-details">
         <summary>Развернуть полную активность</summary>
-        <h3>Решено верно</h3>
+        <div class="table-head"><h3>Решено верно</h3>${downloadButton("correct", "Скачать статистику")}</div>
         <table class="table"><tr><th>Ученик</th><th>Группа</th><th>Подгруппа</th><th>Задание</th><th>Ответ</th></tr>${answerListRows(data.correct_attempts)}</table>
-        <h3>Решено неверно</h3>
+        <div class="table-head"><h3>Решено неверно</h3>${downloadButton("incorrect", "Скачать статистику")}</div>
         <table class="table"><tr><th>Ученик</th><th>Группа</th><th>Подгруппа</th><th>Задание</th><th>Ответ</th></tr>${answerListRows(data.incorrect_attempts)}</table>
-        <h3>Последние попытки</h3>
+        <div class="table-head"><h3>Последние попытки</h3>${downloadButton("recent", "Скачать статистику")}</div>
         <table class="table"><tr><th>Дата</th><th>Пользователь</th><th>Группа</th><th>Подгруппа</th><th>Задание</th><th>Ответ</th><th>Верно</th></tr>${recentRows}</table>
       </details>
     </section>
   `;
   document.body.append(backdrop);
   backdrop.querySelector("#closeProgress").addEventListener("click", () => backdrop.remove());
+  backdrop.querySelectorAll(".download-stat").forEach((button) => {
+    button.addEventListener("click", () => downloadRequest(`/api/progress/export?section=${button.dataset.section}`, `ege_${button.dataset.section}.csv`));
+  });
+}
+
+function showTestComposer() {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const ruleSelector = renderRuleSelector();
+  backdrop.innerHTML = `
+    <section class="progress-modal">
+      <div class="panel-head">
+        <div><p class="eyebrow">тест</p><h2>Составить тест</h2></div>
+        <button class="secondary-button" id="closeTestComposer" type="button">Закрыть</button>
+      </div>
+      <div class="setup-grid">
+        <label>
+          Режим
+          <select id="testMode">
+            <option value="rule">Выбранные темы</option>
+            <option value="mix">Микс</option>
+            <option value="errors">Копилка ошибок</option>
+            <option value="line">Строки</option>
+          </select>
+        </label>
+        <label>
+          Количество заданий
+          <input id="testCount" type="number" min="1" max="60" value="${state.questionCount}" />
+        </label>
+      </div>
+      <label class="manual-toggle">
+        <input id="testIncludeErrors" type="checkbox" />
+        <span>Добавить слова из копилки ошибок класса</span>
+      </label>
+      <div id="testRuleSelector">${ruleSelector}</div>
+      <p class="error" id="testComposerError"></p>
+      <div class="practice-actions">
+        <button class="primary-button" id="downloadTest" type="button">Скачать .txt</button>
+      </div>
+    </section>
+  `;
+  document.body.append(backdrop);
+  const refreshRules = () => {
+    backdrop.querySelector("#testRuleSelector").classList.toggle("hidden", backdrop.querySelector("#testMode").value !== "rule");
+  };
+  backdrop.querySelector("#closeTestComposer").addEventListener("click", () => backdrop.remove());
+  backdrop.querySelector("#testMode").addEventListener("change", refreshRules);
+  backdrop.querySelectorAll("[data-category]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedCategory = button.dataset.category;
+      state.selectedRuleIds = [];
+      ensureRuleSelection();
+      backdrop.remove();
+      showTestComposer();
+    });
+  });
+  backdrop.querySelector("#allRules")?.addEventListener("change", (event) => {
+    state.selectedRuleIds = event.target.checked ? selectedRules().map((rule) => rule.rule_id) : [];
+    backdrop.remove();
+    showTestComposer();
+  });
+  backdrop.querySelectorAll("[data-rule-id]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const next = selectedRuleSet();
+      checkbox.checked ? next.add(checkbox.dataset.ruleId) : next.delete(checkbox.dataset.ruleId);
+      state.selectedRuleIds = [...next];
+    });
+  });
+  backdrop.querySelector("#downloadTest").addEventListener("click", async () => {
+    const error = backdrop.querySelector("#testComposerError");
+    error.textContent = "";
+    try {
+      await downloadRequest("/api/teacher/test", "ege_test.txt", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: backdrop.querySelector("#testMode").value,
+          count: backdrop.querySelector("#testCount").value,
+          include_errors: backdrop.querySelector("#testIncludeErrors").checked,
+          rule_ids: state.selectedRuleIds,
+        }),
+      });
+    } catch (err) {
+      error.textContent = err.message;
+    }
+  });
+  refreshRules();
 }
 
 function renderAdminContent(data, closeButton = "") {
@@ -647,9 +902,14 @@ function renderAdminContent(data, closeButton = "") {
           <td>${student.username}</td>
           <td>${student.attempts}</td>
           <td>${pct(student.correct, student.attempts)}</td>
+          <td>
+            <button class="ghost-button reset-password" data-user-id="${student.user_id}" data-username="${student.username}" type="button">
+              ${student.password_reset_required ? "Ожидает новый пароль" : "Сбросить пароль"}
+            </button>
+          </td>
         </tr>
       `).join("")
-      : `<tr><td colspan="4">Учеников пока нет</td></tr>`;
+      : `<tr><td colspan="5">Учеников пока нет</td></tr>`;
     return `
       <article class="admin-card">
         <div class="student-card-head">
@@ -657,13 +917,18 @@ function renderAdminContent(data, closeButton = "") {
             <b>${teacher.display_name}</b>
             <span class="muted">@${teacher.username} · код ${teacher.teacher_code || "не задан"}</span>
           </div>
-          <div class="mini-stat"><b>${teacher.students}</b><span>учеников</span></div>
+          <div class="button-row">
+            <div class="mini-stat"><b>${teacher.students}</b><span>учеников</span></div>
+            <button class="ghost-button reset-password" data-user-id="${teacher.user_id}" data-username="${teacher.username}" type="button">
+              ${teacher.password_reset_required ? "Ожидает новый пароль" : "Сбросить пароль"}
+            </button>
+          </div>
         </div>
         <div class="teacher-metrics">
           <div class="stat"><b>${teacher.attempts}</b><span>ответов</span></div>
           <div class="stat"><b>${pct(teacher.correct, teacher.attempts)}</b><span>точность</span></div>
         </div>
-        <table class="table"><tr><th>Ученик</th><th>Логин</th><th>Ответов</th><th>Точность</th></tr>${students}</table>
+        <table class="table"><tr><th>Ученик</th><th>Логин</th><th>Ответов</th><th>Точность</th><th>Пароль</th></tr>${students}</table>
       </article>
     `;
   }).join("");
@@ -693,6 +958,7 @@ async function renderAdminDashboard() {
   try {
     const data = await api("/api/admin");
     panel.innerHTML = renderAdminContent(data);
+    bindAdminActions(panel);
   } catch (err) {
     panel.innerHTML = `<p class="error">${err.message}</p>`;
   }
@@ -709,6 +975,26 @@ async function showAdmin() {
   `;
   document.body.append(backdrop);
   backdrop.querySelector("#closeAdmin").addEventListener("click", () => backdrop.remove());
+  bindAdminActions(backdrop);
+}
+
+function bindAdminActions(root) {
+  root.querySelectorAll(".reset-password").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!confirm(`Сбросить пароль пользователю ${button.dataset.username}?`)) return;
+      button.disabled = true;
+      try {
+        await api("/api/admin/reset-password", {
+          method: "POST",
+          body: JSON.stringify({ user_id: button.dataset.userId }),
+        });
+        button.textContent = "Ожидает новый пароль";
+      } catch (err) {
+        alert(err.message);
+        button.disabled = false;
+      }
+    });
+  });
 }
 
 restoreSession();
