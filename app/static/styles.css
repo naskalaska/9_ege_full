@@ -98,7 +98,7 @@ select {
   width: min(1380px, calc(100vw - 36px));
   margin: 34px auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px 300px;
+  grid-template-columns: minmax(360px, 1fr) 330px 300px;
   gap: 24px;
 }
 
@@ -250,6 +250,10 @@ input[type="radio"] {
   width: 16px;
   height: 16px;
   accent-color: var(--green);
+}
+
+input[type="number"] {
+  appearance: textfield;
 }
 
 .role-choice {
@@ -409,6 +413,20 @@ button {
   gap: 14px;
   margin-top: 18px;
   align-items: end;
+}
+
+.manual-toggle {
+  margin-top: 12px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+}
+
+.manual-toggle input {
+  width: 18px;
+  height: 18px;
 }
 
 .rule-list {
@@ -584,6 +602,30 @@ button {
   border-color: var(--blue);
 }
 
+.answer-input-label,
+.letter-input-row {
+  margin-top: 14px;
+}
+
+.letter-input-row {
+  display: grid;
+  grid-template-columns: 90px 150px;
+  gap: 10px;
+  align-items: center;
+}
+
+.letter-input-row input {
+  height: 54px;
+  text-align: center;
+  font-size: 28px;
+  font-weight: 900;
+  text-transform: lowercase;
+}
+
+.live-question {
+  max-width: 720px;
+}
+
 .line-row {
   width: 100%;
   display: grid;
@@ -601,6 +643,10 @@ button {
 .line-row.selected {
   border-color: var(--blue);
   background: #eef4ff;
+}
+
+.static-line-row {
+  cursor: default;
 }
 
 .line-words {
@@ -678,6 +724,24 @@ button {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.button-row,
+.table-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.table-head {
+  justify-content: space-between;
+  margin-top: 16px;
+}
+
+.table-head h3 {
+  margin: 0;
 }
 
 .section-head h3,
@@ -810,5 +874,24 @@ button {
     inset: 22px;
   }
 }
+
+@media (max-width: 1180px) {
+  .login-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .login-panel {
+    align-self: auto;
+  }
+
+  .login-hero {
+    min-height: 460px;
+  }
+
+  .hero-copy h2 {
+    font-size: 36px;
+  }
+}
+
 
 
