@@ -641,6 +641,7 @@ def make_line_question() -> dict[str, Any]:
         "kind": "line",
         "prompt": "Выберите все строки, где во всех трех словах пропущена одна и та же буква.",
         "rows": [[word["variant"] for word in row["words"]] for row in rows],
+        "row_word_ids": [[word["id"] for word in row["words"]] for row in rows],
         "choices": [str(number) for number in range(1, len(rows) + 1)],
         "category": "Строка",
         "rule_id": "line_same_letter",
@@ -677,7 +678,11 @@ def record_attempt(
     is_correct = int(given == correct)
     word_id = question.get("source_word_id")
     if word_id:
-        update_word_progress(con, user_id, session["scope_id"], word_id, is_correct)
+        if session["scope_id"] != scope_id_for("errors"):
+            update_word_progress(con, user_id, session["scope_id"], word_id, is_correct)
+        update_error_bank_progress(con, user_id, word_id, is_correct)
+    elif question.get("kind") == "line":
+        record_line_word_progress(con, user_id, session, question_id, question, given, is_correct, elapsed)
     con.execute(
         """
         INSERT INTO attempts
@@ -713,17 +718,101 @@ def record_attempt(
     }
 
 
+def update_error_bank_progress(
+    con: sqlite3.Connection,
+    user_id: str,
+    word_id: str,
+    is_correct: int,
+) -> None:
+    update_word_progress(con, user_id, scope_id_for("errors"), word_id, is_correct)
+
+
+def record_word_attempt(
+    con: sqlite3.Connection,
+    user_id: str,
+    session: dict[str, Any],
+    question_id: str,
+    word: dict[str, Any],
+    given: str,
+    is_correct: int,
+    elapsed: Any = None,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO attempts
+            (attempt_id, user_id, mode, scope_id, word_id, rule_id, category, rule_name,
+             question_id, prompt, given_answer, correct_answer, is_correct, created_at, time_spent_sec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            secrets.token_hex(12),
+            user_id,
+            session["mode"],
+            scope_id_for("errors"),
+            word["id"],
+            word["rule_id"],
+            word["category"],
+            word["rule_name"],
+            question_id,
+            word["variant"],
+            given,
+            word["correct_letter"],
+            is_correct,
+            now_iso(),
+            elapsed,
+        ),
+    )
+
+
+def record_line_word_progress(
+    con: sqlite3.Connection,
+    user_id: str,
+    session: dict[str, Any],
+    question_id: str,
+    question: dict[str, Any],
+    given: str,
+    is_correct: int,
+    elapsed: Any = None,
+) -> None:
+    correct_rows = set(question["correct_answer"])
+    given_rows = set(given)
+    affected_rows = correct_rows.symmetric_difference(given_rows)
+    row_word_ids = question.get("row_word_ids") or []
+    if is_correct:
+        affected_rows = {str(index + 1) for index in range(len(row_word_ids))}
+
+    for row_number in sorted(affected_rows):
+        row_index = int(row_number) - 1
+        if row_index < 0 or row_index >= len(row_word_ids):
+            continue
+        for word_id in row_word_ids[row_index]:
+            word = WORD_BY_ID.get(word_id)
+            if not word:
+                continue
+            update_word_progress(con, user_id, scope_id_for("line"), word_id, is_correct)
+            update_error_bank_progress(con, user_id, word_id, is_correct)
+            record_word_attempt(
+                con,
+                user_id,
+                session,
+                f"{question_id}:row{row_number}:{word_id}",
+                word,
+                f"строка {row_number}",
+                is_correct,
+                elapsed,
+            )
+
+
 def error_bank_words(user_id: str) -> list[dict[str, Any]]:
     with db() as con:
         rows = con.execute(
             """
-            SELECT word_id, MAX(created_at) AS last_error_at
-            FROM attempts
-            WHERE user_id = ? AND is_correct = 0 AND word_id IS NOT NULL
-            GROUP BY word_id
-            ORDER BY last_error_at DESC
+            SELECT word_id, due_reviews, error_count, last_seen_at
+            FROM word_progress
+            WHERE user_id = ? AND scope_id = ? AND due_reviews > 0
+            ORDER BY due_reviews DESC, error_count DESC, last_seen_at DESC
             """,
-            (user_id,),
+            (user_id, scope_id_for("errors")),
         ).fetchall()
     return [WORD_BY_ID[row["word_id"]] for row in rows if row["word_id"] in WORD_BY_ID]
 
@@ -775,14 +864,13 @@ def teacher_dashboard(con: sqlite3.Connection, teacher_id: str) -> dict[str, Any
         ).fetchall()
         error_bank = con.execute(
             """
-            SELECT a.word_id, MAX(a.created_at) AS last_error_at, COUNT(*) AS errors
-            FROM attempts a
-            WHERE a.user_id = ? AND a.is_correct = 0 AND a.word_id IS NOT NULL
-            GROUP BY a.word_id
-            ORDER BY last_error_at DESC
+            SELECT word_id, error_count AS errors
+            FROM word_progress
+            WHERE user_id = ? AND scope_id = ? AND due_reviews > 0
+            ORDER BY due_reviews DESC, error_count DESC, last_seen_at DESC
             LIMIT 20
             """,
-            (user_id,),
+            (user_id, scope_id_for("errors")),
         ).fetchall()
         touched = int(summary["touched"] or 0)
         result_students.append(
@@ -915,6 +1003,7 @@ def start_practice(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     for question in questions:
         correct_answer = question.pop("_correct_answer", "")
         answer_key[question["question_id"]] = {**question, "correct_answer": str(correct_answer).lower()}
+        question.pop("row_word_ids", None)
         public_questions.append(question)
 
     PRACTICE_SESSIONS[session_id] = {
@@ -1064,11 +1153,11 @@ def progress_for(user: dict[str, Any]) -> dict[str, Any]:
         ).fetchone() if user["role"] != "teacher" else {"due": 0}
         error_bank = con.execute(
             """
-            SELECT COUNT(DISTINCT word_id) AS total
-            FROM attempts
-            WHERE user_id = ? AND is_correct = 0 AND word_id IS NOT NULL
+            SELECT COUNT(*) AS total
+            FROM word_progress
+            WHERE user_id = ? AND scope_id = ? AND due_reviews > 0
             """,
-            (user["user_id"],),
+            (user["user_id"], scope_id_for("errors")),
         ).fetchone() if user["role"] != "teacher" else {"total": 0}
     return {
         "summary": dict(summary),
@@ -1136,14 +1225,14 @@ def teacher_error_pool(teacher_id: str) -> list[dict[str, Any]]:
     with db() as con:
         rows = con.execute(
             """
-            SELECT a.word_id, MAX(a.created_at) AS last_error_at
-            FROM attempts a
-            JOIN users u ON u.user_id = a.user_id
-            WHERE u.teacher_id = ? AND a.is_correct = 0 AND a.word_id IS NOT NULL
-            GROUP BY a.word_id
-            ORDER BY last_error_at DESC
+            SELECT wp.word_id
+            FROM word_progress wp
+            JOIN users u ON u.user_id = wp.user_id
+            WHERE u.teacher_id = ? AND wp.scope_id = ? AND wp.due_reviews > 0
+            GROUP BY wp.word_id
+            ORDER BY MAX(wp.due_reviews) DESC, MAX(wp.error_count) DESC, MAX(wp.last_seen_at) DESC
             """,
-            (teacher_id,),
+            (teacher_id, scope_id_for("errors")),
         ).fetchall()
     return [WORD_BY_ID[row["word_id"]] for row in rows if row["word_id"] in WORD_BY_ID]
 
@@ -1366,3 +1455,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
