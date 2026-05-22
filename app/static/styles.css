@@ -1,5 +1,4 @@
-:root {
-  color-scheme: light;
+color-scheme: light;
   --ink: #202124;
   --muted: #68707a;
   --line: #d8dee8;
@@ -115,9 +114,9 @@ select {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(120deg, rgba(31, 42, 39, 0.88), rgba(31, 42, 39, 0.28)),
-    radial-gradient(circle at 85% 24%, rgba(243, 195, 91, 0.62), transparent 22%),
-    linear-gradient(45deg, #2f7d5c, #3d6fb6 52%, #b84a3a);
+    linear-gradient(120deg, rgba(19, 34, 31, 0.9), rgba(19, 34, 31, 0.28) 54%, rgba(19, 34, 31, 0.1)),
+    url("/hero-cover.png") center / cover no-repeat,
+    #1f2a27;
 }
 
 .hero-logo {
@@ -135,7 +134,7 @@ select {
 .letter-grid {
   position: absolute;
   inset: 42px;
-  display: grid;
+  display: none;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
   opacity: 0.8;
@@ -674,6 +673,11 @@ button {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.setup-actions {
+  justify-content: flex-start;
 }
 
 .result-list {
@@ -690,11 +694,25 @@ button {
 }
 
 .result-item.ok {
-  border-left: 6px solid var(--green);
+  border-color: #00a94f;
+  border-left: 8px solid #00c853;
+  background: #dcffe9;
+  box-shadow: 0 10px 24px rgba(0, 200, 83, 0.16);
 }
 
 .result-item.bad {
-  border-left: 6px solid var(--red);
+  border-color: #ef233c;
+  border-left: 8px solid #ff1744;
+  background: #ffe0e6;
+  box-shadow: 0 10px 24px rgba(255, 23, 68, 0.16);
+}
+
+.result-item.ok b {
+  color: #007a35;
+}
+
+.result-item.bad b {
+  color: #c00024;
 }
 
 .modal-backdrop {
@@ -900,6 +918,7 @@ button {
     font-size: 36px;
   }
 }
+
 
 
 
