@@ -10,6 +10,7 @@ const state = {
   startedAt: null,
   questionCount: 10,
   manualInput: false,
+  errorTrainingMode: "cards",
   currentQuestionIndex: 0,
   liveResults: [],
 };
@@ -302,9 +303,25 @@ function renderMode() {
   renderSetup();
 }
 
+function backToMenu() {
+  state.currentSession = null;
+  state.answers = {};
+  renderMode();
+  document.querySelector("#modeList")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function renderSetup() {
   const setup = document.querySelector("#setupView");
   const ruleSelector = ["rule", "word_letter"].includes(state.mode) ? renderRuleSelector() : "";
+  const errorModeSelector = state.mode === "errors" ? `
+    <label>
+      Режим в копилке
+      <select id="errorTrainingMode">
+        <option value="cards" ${state.errorTrainingMode === "cards" ? "selected" : ""}>Карточки с вариантами</option>
+        <option value="word_letter" ${state.errorTrainingMode === "word_letter" ? "selected" : ""}>Слово - буква</option>
+      </select>
+    </label>
+  ` : "";
   setup.innerHTML = `
     <div class="setup-grid">
       <label>
@@ -313,10 +330,14 @@ function renderSetup() {
       </label>
       <button class="primary-button" id="startPractice" type="button">Начать</button>
     </div>
+    ${errorModeSelector}
     <label class="manual-toggle">
       <input id="manualInput" type="checkbox" ${state.manualInput || state.mode === "word_letter" ? "checked" : ""} ${state.mode === "word_letter" ? "disabled" : ""} />
       <span>Самостоятельно вводить ответ с клавиатуры</span>
     </label>
+    <div class="practice-actions setup-actions">
+      <button class="ghost-button" id="backToMenu" type="button">Назад к меню</button>
+    </div>
     ${ruleSelector}
   `;
   setup.querySelector("#startPractice").addEventListener("click", startPractice);
@@ -327,6 +348,10 @@ function renderSetup() {
   setup.querySelector("#manualInput").addEventListener("change", (event) => {
     state.manualInput = event.target.checked;
   });
+  setup.querySelector("#errorTrainingMode")?.addEventListener("change", (event) => {
+    state.errorTrainingMode = event.target.value;
+  });
+  setup.querySelector("#backToMenu").addEventListener("click", backToMenu);
   setup.querySelectorAll("[data-category]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedCategory = button.dataset.category;
@@ -402,6 +427,7 @@ function renderRuleSelector() {
 async function startPractice() {
   const count = state.questionCount;
   const payload = { mode: state.mode, count };
+  if (state.mode === "errors") payload.error_training_mode = state.errorTrainingMode;
   if (["rule", "word_letter"].includes(state.mode)) payload.rule_ids = state.selectedRuleIds;
   const setup = document.querySelector("#setupView");
   try {
@@ -415,7 +441,7 @@ async function startPractice() {
     state.currentQuestionIndex = 0;
     state.startedAt = Date.now();
     setup.innerHTML = "";
-    if (state.mode === "word_letter") {
+    if (state.mode === "word_letter" || (state.mode === "errors" && state.errorTrainingMode === "word_letter")) {
       renderLiveQuestion();
     } else {
       renderQuestions();
@@ -457,6 +483,7 @@ function renderLiveQuestion(feedback = null) {
       <div id="liveFeedback">${feedback || ""}</div>
     </article>
     <div class="practice-actions">
+      <button class="ghost-button" id="backPractice" type="button">Назад</button>
       <button class="ghost-button" id="cancelPractice" type="button">Сбросить</button>
     </div>
   `;
@@ -505,6 +532,7 @@ function renderLiveQuestion(feedback = null) {
     if (event.key === "Enter") send();
   });
   practice.querySelector("#cancelPractice").addEventListener("click", renderMode);
+  practice.querySelector("#backPractice").addEventListener("click", backToMenu);
   input.focus();
 }
 
@@ -516,10 +544,12 @@ function renderQuestions() {
       ${state.currentSession.questions.map(renderQuestion).join("")}
     </div>
     <div class="practice-actions">
+      <button class="ghost-button" id="backPractice" type="button">Назад</button>
       <button class="ghost-button" id="cancelPractice" type="button">Сбросить</button>
       <button class="primary-button" id="submitPractice" type="button">Проверить</button>
     </div>
   `;
+  practice.querySelector("#backPractice").addEventListener("click", backToMenu);
   practice.querySelector("#cancelPractice").addEventListener("click", renderMode);
   practice.querySelector("#submitPractice").addEventListener("click", submitPractice);
   practice.querySelectorAll("[data-manual-answer]").forEach((input) => {
@@ -650,9 +680,11 @@ function renderResults(data) {
       `).join("")}
     </div>
     <div class="practice-actions">
+      <button class="ghost-button" type="button" id="backFromResults">Назад</button>
       <button class="primary-button" type="button" id="againButton">Новая тренировка</button>
     </div>
   `;
+  result.querySelector("#backFromResults").addEventListener("click", backToMenu);
   result.querySelector("#againButton").addEventListener("click", renderMode);
 }
 
